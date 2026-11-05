@@ -327,20 +327,21 @@ const sortKeys=o=>{const r={lists:{},tasks:{},tomb:{}};for(const n of['lists','t
 
 /* ---------- Dropbox (OAuth PKCE, ohne Server) ---------- */
 const b64url=buf=>btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-async function dbxStartAuth(){
-  const key=DBX.key;if(!key)throw new Error('nokey');
-  const verifier=b64url(crypto.getRandomValues(new Uint8Array(48)));
-  ls.set('dbx_verifier',verifier);
-  const challenge=b64url(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
+async function dbxPrepareAuth(){
+  let v=ls.get('dbx_verifier','');
+  if(!v){v=b64url(crypto.getRandomValues(new Uint8Array(48)));ls.set('dbx_verifier',v)}
+  return b64url(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)));
+}
+function dbxAuthUrl(key,challenge){
   const u=new URL('https://www.dropbox.com/oauth2/authorize');
   u.search=new URLSearchParams({client_id:key,response_type:'code',code_challenge:challenge,code_challenge_method:'S256',token_access_type:'offline'});
-  window.open(u.toString(),'_blank');
+  return u.toString();
 }
 async function dbxFinishAuth(code){
   const r=await fetch('https://api.dropboxapi.com/oauth2/token',{method:'POST',body:new URLSearchParams({code:code.trim(),grant_type:'authorization_code',code_verifier:ls.get('dbx_verifier',''),client_id:DBX.key})});
   const j=await r.json().catch(()=>({}));
   if(!r.ok||!j.refresh_token)throw new Error(j.error_description||j.error||'Anmeldung fehlgeschlagen');
-  ls.set('dbx_refresh',j.refresh_token);DBX.access=j.access_token;DBX.accessExp=Date.now()+(j.expires_in-60)*1000;
+  ls.set('dbx_refresh',j.refresh_token);ls.set('dbx_verifier','');DBX.access=j.access_token;DBX.accessExp=Date.now()+(j.expires_in-60)*1000;
 }
 async function dbxToken(){
   if(DBX.access&&Date.now()<DBX.accessExp)return DBX.access;
@@ -425,7 +426,7 @@ function openSettings(){
     <div class="sheet-foot" style="margin-top:4px"><button class="btn danger" data-disc>Trennen</button><span class="sp"></span><button class="btn primary" data-now>Jetzt abgleichen</button></div>`
     :`<p style="margin:0;color:var(--muted)">Verbinde Tagwerk einmal pro Gerät mit Dropbox. Danach gleichen sich alle Geräte automatisch ab.</p>
     <div class="field"><label for="st-key">App-Key deiner Dropbox-App</label><input class="inp" id="st-key" value="${esc(DBX.key)}" placeholder="z. B. a1b2c3d4e5f6g7h" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-    <div class="field"><span class="lbl">Schritt 1</span><button class="btn" data-auth>Bei Dropbox anmelden</button></div>
+    <div class="field"><span class="lbl">Schritt 1</span><a class="btn" data-auth href="#" target="_blank" rel="noopener" style="text-decoration:none;justify-content:center">Bei Dropbox anmelden</a></div>
     <div class="field"><label for="st-code">Schritt 2: Code von Dropbox hier einfügen</label><input class="inp" id="st-code" placeholder="Code einfügen" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
     <div id="st-msg"></div>
     <div class="sheet-foot"><span class="sp"></span><button class="btn" data-x>Schließen</button><button class="btn primary" data-conn>Verbinden</button></div>`}
@@ -435,7 +436,14 @@ function openSettings(){
     const q=x=>s.querySelector(x);
     s.querySelectorAll('[data-x]').forEach(b=>b.onclick=closeSheet);
     const msg=t=>{const m=q('#st-msg');if(m)m.innerHTML=`<div class="confirm"><p>${esc(t)}</p></div>`};
-    if(q('[data-auth]'))q('[data-auth]').onclick=async()=>{const k=q('#st-key').value.trim();if(!k){msg('Bitte zuerst den App-Key eintragen.');q('#st-key').focus();return}ls.set('dbx_key',k);try{await dbxStartAuth()}catch(e){msg('Das Anmeldefenster ließ sich nicht öffnen.')}};
+    let challenge=null;
+    const keyInp=q('#st-key'),authA=q('[data-auth]');
+    const paintAuth=()=>{if(!authA)return;const k=keyInp.value.trim();authA.href=k&&challenge?dbxAuthUrl(k,challenge):'#';authA.style.opacity=k&&challenge?1:.5};
+    if(authA){
+      dbxPrepareAuth().then(c=>{challenge=c;paintAuth()});
+      keyInp.addEventListener('input',()=>{ls.set('dbx_key',keyInp.value.trim());paintAuth()});
+      authA.addEventListener('click',e=>{if(authA.getAttribute('href')==='#'){e.preventDefault();msg(keyInp.value.trim()?'Einen Moment, die Anmeldung wird vorbereitet. Bitte nochmal tippen.':'Bitte zuerst den App-Key eintragen.');if(!keyInp.value.trim())keyInp.focus()}});
+    }
     if(q('[data-conn]'))q('[data-conn]').onclick=async()=>{
       const code=q('#st-code').value.trim();if(!code){msg('Bitte den Code von Dropbox einfügen.');return}
       const k=q('#st-key').value.trim();if(k)ls.set('dbx_key',k);
